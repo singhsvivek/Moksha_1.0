@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "moksha"
-version = "2.0.0"
+name = "Moksha_1"
+version = "0.0.1"
 description = "Institutional-grade Deep Learning Hedge Fund"
 authors = ["Your Team <team@moksha.ai>"]
 readme = "README.md"
-packages = [{include = "moksha", from = "src"}]
+packages = [{include = "Moksha_1", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
