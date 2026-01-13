@@ -4,34 +4,23 @@ services:
   postgres:
     image: timescale/timescaledb:latest-pg15
     container_name: moksha_postgres
-    environment:
-      POSTGRES_DB: moksha
-      POSTGRES_USER: moksha_user
-      POSTGRES_PASSWORD: change_this_secure_password
-    ports:
-      - "5432:5432"
+    env_file: .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U moksha_user -d moksha"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    container_name: moksha_redis
     ports:
-      - "6379:6379"
+      - "5432:5432"
+
+  # The Brain
+  moksha_bot:
+    build: .
+    container_name: moksha_engine
+    restart: always # Auto-restart on crash
+    env_file: .env
+    depends_on:
+      - postgres
     volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+      - ./src:/app/src # Live code updates
+      - ./moksha_nn3.pth:/app/moksha_nn3.pth # Persist the trained model
 
 volumes:
   postgres_data:
-  redis_data:
