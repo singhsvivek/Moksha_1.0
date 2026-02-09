@@ -1,36 +1,46 @@
-# src/Moksha_1/config.py
 import os
-from typing import List
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field # <--- Import Field
+from dotenv import load_dotenv
 
-class Settings(BaseSettings):
-    ALPACA_API_KEY: str
-    ALPACA_SECRET_KEY: str
-    ALPACA_DATA_FEED: str = "iex"
+# Load .env variables immediately
+load_dotenv()
+
+class Settings:
+    """
+    Optimized Configuration. 
+    Removes Pydantic dependency to prevent 'model_config' errors.
+    """
     
-    # --- THE FIX ---
-    # In Pydantic V2, we use Field(validation_alias=...) instead of Config fields
-    UNIVERSE_STRING: str = Field("SPY", validation_alias="UNIVERSE")
-    
-    @property
-    def UNIVERSE(self) -> List[str]:
-        return [s.strip() for s in self.UNIVERSE_STRING.split(",") if s.strip()]
+    # --- 1. ALPACA SETTINGS ---
+    ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+    ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+    ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex")
 
-    POSTGRES_USER: str
-    POSTGRES_PASSWORD: str
-    POSTGRES_DB: str
-    POSTGRES_HOST: str = "localhost"
-    POSTGRES_PORT: str = "5432"
+    # --- 2. TRADING UNIVERSE ---
+    # Parses "AAPL,MSFT,SPY" string into a Python List
+    _universe_str = os.getenv("UNIVERSE", "AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,SPY")
+    UNIVERSE = [s.strip() for s in _universe_str.split(",") if s.strip()]
 
+    # --- 3. DATABASE SETTINGS ---
+    POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
+    POSTGRES_DB = os.getenv("POSTGRES_DB", "moksha_db")
+    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres") # Default to service name 'postgres'
+    POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+
+    # --- 4. SYSTEM SETTINGS ---
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+    # --- COMMUNICATIONS GRID (Moksha 3.0) ---
+    # Default fallback is provided but should be overridden by .env
+    DISCORD_WEBHOOK_ALERTS = os.getenv('DISCORD_WEBHOOK_ALERTS', '')
+    DISCORD_WEBHOOK_HEARTBEAT = os.getenv('DISCORD_WEBHOOK_HEARTBEAT', '')
+    DISCORD_WEBHOOK_ERROR = os.getenv('DISCORD_WEBHOOK_ERROR', '')
+
+    # --- 5. CRITICAL FIX: CONNECTION STRING ---
+    # The DB module looks for 'DB_CONNECTION_STRING', not 'DATABASE_URL'
     @property
-    def DATABASE_URL(self) -> str:
+    def DB_CONNECTION_STRING(self):
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        extra="ignore"
-        # Removed 'fields' dict entirely to stop the warning
-    )
-
+# Initialize Singleton
 settings = Settings()

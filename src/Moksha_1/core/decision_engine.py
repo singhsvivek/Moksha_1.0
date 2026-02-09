@@ -1,110 +1,116 @@
-
-import torch
 import pandas as pd
+import torch
+import torch.nn as nn
 import numpy as np
-from typing import Dict, List
+import os
 from Moksha_1.data.storage.timescaledb import TimescaleStorage
-from Moksha_1.models.deep_quant.model import FinancialNN3
-from Moksha_1.data.processing.regime_detector import RegimeDetector
-from Moksha_1.config import settings
+from Moksha_1.data.processing.feature_engineering import FeatureEngine
+from Moksha_1.utils.logger import logger
+
+# --- META ARCHITECTURE ---
+class MetaNet(nn.Module):
+    def __init__(self, input_size=110):
+        super(MetaNet, self).__init__()
+        self.network = nn.Sequential(
+            nn.Linear(input_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid() 
+        )
+
+    def forward(self, x):
+        return self.network(x)
 
 class DecisionEngine:
     def __init__(self):
         self.db = TimescaleStorage()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-        
-        # 1. Load the Brain (Agent 2)
-        # Note: We assume input_dim=8 based on your successful training run. 
-        # In production, we'd save this metadata in a config file.
-        self.model = FinancialNN3(input_dim=8).to(self.device)
-        try:
-            self.model.load_state_dict(torch.load("moksha_nn3.pth", map_location=self.device))
-            self.model.eval() # Set to Inference Mode (No Dropout)
-            print("✅ Decision Engine: Neural Network Loaded.")
-        except FileNotFoundError:
-            print("⚠️ Warning: Model file not found. Run train_agent2.py first.")
+        self.fe = FeatureEngine()
+        self.device = torch.device("cpu")
+        self.EXPECTED_INPUT_SIZE = 5 # Default
+        self.model = self._load_model()
 
-        # 2. Load the Guardian (Agent 3)
-        self.regime_detector = RegimeDetector()
-
-    def analyze_market(self, symbols: List[str] = None) -> pd.DataFrame:
-        """
-        Runs the full Daily Cycle: Data -> Features -> Alpha -> Risk -> Decision.
-        """
-        print("\n--- 🧠 STARTING DAILY ANALYSIS CYCLE ---")
+    def _load_model(self):
+        path = "/app/moksha_meta_v1.pth"
         
-        # A. Fetch Latest Data (Features)
-        df_features = self.db.get_features_df(symbols=symbols)
-        if df_features.empty:
-            print("❌ No features found.")
-            return pd.DataFrame()
-
-        # Get the absolute latest timestamp per symbol
-        latest_time = df_features['time'].max()
-        current_features = df_features[df_features['time'] == latest_time].copy()
-        
-        # --- FIX: Align Feature Columns with Training Data ---
-        # The model was trained on 8 features. The DB has 9 (including the empty rank_vol_1m).
-        # We must explicitly exclude the "Poison Pill" column.
-        exclude_cols = ['time', 'symbol', 'rank_vol_1m'] 
-        
-        valid_cols = [c for c in current_features.columns if c not in exclude_cols]
-        
-        # Verification to prevent crashing
-        if len(valid_cols) != 8:
-            # Fallback: If strict name matching fails, just take the first 8 columns
-            # (assuming relative order is preserved from DB creation)
-            print(f"⚠️ Warning: Found {len(valid_cols)} features, expected 8. Truncating extra columns.")
-            valid_cols = valid_cols[:8]
-
-        # Fill NaNs with 0.0 (Median) just like in training
-        current_features[valid_cols] = current_features[valid_cols].fillna(0.0)
-
-        # B. Generate Alpha (Prediction)
-        try:
-            X_pred = torch.tensor(current_features[valid_cols].values.astype(np.float32)).to(self.device)
+        # 1. Check File Existence
+        if not os.path.exists(path):
+            logger.error(f"❌ CRITICAL: Model file not found at {path}")
+            logger.error("   👉 ACTION REQUIRED: Run 'python src/train_meta.py' to generate the model.")
+            return None
             
-            with torch.no_grad():
-                alpha_raw = self.model(X_pred).cpu().numpy().flatten()
+        try:
+            # 2. Load Weights
+            state = torch.load(path, map_location=self.device)
+            
+            # 3. Auto-Detect Input Size
+            if 'network.0.weight' in state:
+                self.EXPECTED_INPUT_SIZE = state['network.0.weight'].shape[1]
+                logger.info(f"   🧠 Model Architecture detected input size: {self.EXPECTED_INPUT_SIZE}")
+            
+            # 4. Initialize & Load
+            model = MetaNet(self.EXPECTED_INPUT_SIZE)
+            model.load_state_dict(state)
+            model.eval()
+            
+            logger.info(f"✅ Meta-Brain Loaded Successfully: {path}")
+            return model
+            
+        except Exception as e:
+            logger.error(f"❌ CRITICAL: Failed to load model weights: {e}")
+            return None
+
+    def analyze_market(self, symbols, override_data=None):
+        if self.model is None: 
+            return pd.DataFrame()
+        
+        # 1. Data & Features
+        raw = override_data if override_data is not None else self.db.get_bars_df(symbols, limit=500)
+        if raw.empty: return pd.DataFrame()
+        
+        df = self.fe.create_features(raw, training_mode=True)
+        latest = df.groupby('symbol').tail(1).copy()
+        
+        decisions = []
+        with torch.no_grad():
+            for _, row in latest.iterrows():
+                symbol = row['symbol']
                 
-            current_features['predicted_return'] = alpha_raw
-            
-        except RuntimeError as e:
-            print(f"❌ Model Shape Error: {e}")
-            print(f"Debug: Input Shape: {X_pred.shape}")
-            return pd.DataFrame()
-        
-        # C. Assess Risk (Regime)
-        df_bars = self.db.get_bars_df(symbols=symbols)
-        regime_df = self.regime_detector.detect_regime(df_bars)
-        
-        # Merge Regime info
-        latest_regime = regime_df[regime_df['time'] == regime_df['time'].max()][['symbol', 'regime_label', 'regime_score']]
-        
-        decision_df = pd.merge(current_features, latest_regime, on='symbol', how='left')
-        
-        # D. The Council Logic
-        decision_df['final_signal'] = decision_df.apply(self._apply_council_logic, axis=1)
-        
-        return decision_df[['time', 'symbol', 'predicted_return', 'regime_label', 'final_signal']]
+                # --- STEP 1: PRIMARY SIGNAL (The Rule) ---
+                # "Is this stock trending?"
+                # Price > SMA50 and ADX > 20 (Strong Trend)
+                is_trending = (row['dist_sma50'] > 0) and (row['adx'] > 20)
+                
+                if not is_trending:
+                    continue 
 
-    def _apply_council_logic(self, row) -> float:
-        """
-        Synthesizes Alpha and Risk into a Target Weight.
-        """
-        raw_signal = row['predicted_return'] # e.g., 0.05 (5% predicted return)
-        regime = row['regime_label']
-        
-        # 1. Base Confidence (Scale the raw return to a -1 to 1 conviction score)
-        # Using a tanh function to clamp extreme predictions
-        confidence = np.tanh(raw_signal * 10) 
-        
-        # 2. Risk Multiplier
-        if regime == 'CRITICAL_TURBULENCE':
-            risk_mult = 0.0  # HARD STOP: Do not trade
-        elif regime == 'HIGH_VOLATILITY':
-            risk_mult = 0.5  # CAUTION: Halve the position size
-        else:
-            risk_mult = 1.0  # NORMAL: Full size
-            
-        return confidence * risk_mult
+                # --- STEP 2: META-LABELING (The Filter) ---
+                # Check for required features
+                feats = ['adx', 'trend_slope', 'rel_vol', 'dist_sma50', 'rsi']
+                missing = [f for f in feats if f not in row]
+                
+                if missing:
+                    logger.warning(f"⚠️ Missing features for {symbol}: {missing}")
+                    continue
+
+                # Prepare Input
+                inp_vals = row[feats].values.astype(np.float32)
+                
+                # Padding
+                if len(inp_vals) != self.EXPECTED_INPUT_SIZE:
+                    inp_vals = np.pad(inp_vals, (0, max(0, self.EXPECTED_INPUT_SIZE - len(inp_vals))), 'constant')[:self.EXPECTED_INPUT_SIZE]
+
+                prob = self.model(torch.tensor(inp_vals).unsqueeze(0)).item()
+                
+                # Decision: Threshold 0.30 (Aggressive)
+                if prob > 0.30:
+                    decisions.append({
+                        "symbol": symbol,
+                        "regime_label": "TREND_META",
+                        "raw_signal": prob,
+                        "final_signal": 1.0 # Buy
+                    })
+
+        return pd.DataFrame(decisions)

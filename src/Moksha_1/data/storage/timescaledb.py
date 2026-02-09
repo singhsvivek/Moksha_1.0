@@ -1,132 +1,114 @@
-# src/Moksha_1/data/storage/timescaledb.py
+import psycopg2
+from psycopg2.extras import execute_values
 import pandas as pd
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
-from typing import List, Dict
-from datetime import datetime
 from Moksha_1.config import settings
-from Moksha_1.core.interfaces import BarData
+from Moksha_1.utils.logger import logger
 
 class TimescaleStorage:
     def __init__(self):
-        self.engine = create_engine(settings.DATABASE_URL)
+        self.conn = self._connect()
+        if self.conn:
+            self._initialize_schema()
 
-    def save_bars(self, bars_data: Dict[str, List[BarData]]):
-        """Bulk save bars to DB."""
-        records = []
-        for symbol, bars in bars_data.items():
-            for bar in bars:
-                records.append({
-                    'time': bar.timestamp,
-                    'symbol': symbol,
-                    'open': float(bar.open),
-                    'high': float(bar.high),
-                    'low': float(bar.low),
-                    'close': float(bar.close),
-                    'volume': float(bar.volume),
-                    'vwap': float(bar.vwap) if bar.vwap else None,
-                    'trade_count': getattr(bar, 'trade_count', 0)
-                })
-        
-        if not records:
-            return
-
-        df = pd.DataFrame(records)
-        # Ensure UTC
-        if df['time'].dt.tz is None:
-            df['time'] = df['time'].dt.tz_localize('UTC')
-        
+    def _connect(self):
         try:
-            with self.engine.begin() as conn:
-                df.to_sql('market_bars', conn, if_exists='append', index=False, method='multi', chunksize=1000)
-            print(f"✅ Saved {len(df)} bars.")
-        except SQLAlchemyError as e:
-            print(f"❌ DB Error: {e}")
-
-    # --- THE FIXED METHOD ---
-    def get_bars_df(self, symbols: List[str] = None, start_date: datetime = None) -> pd.DataFrame:
-        """
-        Reads bars directly into a DataFrame for vectorized feature calculation.
-        FIX: Uses self.engine.connect() to support SQLAlchemy 2.0
-        """
-        query_str = "SELECT * FROM market_bars"
-        params = {}
-        
-        conditions = []
-        if symbols:
-            conditions.append("symbol IN :symbols")
-            params['symbols'] = tuple(symbols)
-        if start_date:
-            conditions.append("time >= :start_date")
-            params['start_date'] = start_date
-            
-        if conditions:
-            query_str += " WHERE " + " AND ".join(conditions)
-            
-        query_str += " ORDER BY time ASC"
-        
-        try:
-            # FIX: Open a connection explicitly
-            with self.engine.connect() as conn:
-                return pd.read_sql(
-                    text(query_str), # Wrap query in text() for SA 2.0 safety
-                    conn, 
-                    params=params, 
-                    parse_dates=['time']
-                )
+            conn = psycopg2.connect(settings.DB_CONNECTION_STRING)
+            conn.autocommit = True
+            return conn
         except Exception as e:
-            print(f"❌ Read Error: {e}")
-            return pd.DataFrame()
-        
+            logger.error(f"❌ DB Connection Failed: {e}")
+            return None
 
-    def clear_bars_table(self):
-        """Truncates the market_bars table to allow fresh ingestion."""
-        try:
-            with self.engine.begin() as conn:
-                conn.execute(text("TRUNCATE TABLE market_bars CASCADE;"))
-            print("🧹 Database cleared: market_bars table is now empty.")
-        except SQLAlchemyError as e:
-            print(f"❌ Error clearing table: {e}")
-
-    def get_features_df(self, symbols: List[str] = None, start_date: datetime = None) -> pd.DataFrame:
+    def _initialize_schema(self):
+        """Creates necessary tables if they don't exist."""
+        # 1. Market Data Table
+        stock_query = """
+        CREATE TABLE IF NOT EXISTS stock_bars (
+            time TIMESTAMPTZ NOT NULL,
+            symbol TEXT NOT NULL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
+            vwap DOUBLE PRECISION,
+            trade_count DOUBLE PRECISION,
+            PRIMARY KEY (time, symbol)
+        );
         """
-        Reads calculated features from the DB.
-        """
-        query_str = "SELECT * FROM factor_features"
-        params = {}
         
-        conditions = []
-        if symbols:
-            conditions.append("symbol IN :symbols")
-            params['symbols'] = tuple(symbols)
-        if start_date:
-            conditions.append("time >= :start_date")
-            params['start_date'] = start_date
-            
-        if conditions:
-            query_str += " WHERE " + " AND ".join(conditions)
-            
-        query_str += " ORDER BY time ASC"
+        # 2. Portfolio Performance Table (NEW)
+        portfolio_query = """
+        CREATE TABLE IF NOT EXISTS portfolio_metrics (
+            time TIMESTAMPTZ NOT NULL,
+            equity DOUBLE PRECISION,
+            cash DOUBLE PRECISION,
+            daily_pl DOUBLE PRECISION,
+            PRIMARY KEY (time)
+        );
+        """
         
         try:
-            with self.engine.connect() as conn:
-                return pd.read_sql(
-                    text(query_str),
-                    conn, 
-                    params=params, 
-                    parse_dates=['time']
-                )
+            with self.conn.cursor() as cur:
+                cur.execute(stock_query)
+                cur.execute(portfolio_query)
+            logger.info("✅ Database Schema Verified (stock_bars + portfolio_metrics).")
         except Exception as e:
-            print(f"❌ Read Features Error: {e}")
-            return pd.DataFrame()
-        
-    def save_features(self, df: pd.DataFrame):
+            logger.error(f"❌ Schema Initialization Failed: {e}")
+
+    # --- MARKET DATA METHODS ---
+    def save_bars(self, df: pd.DataFrame):
+        if df.empty or self.conn is None: return
+
+        query = """
+            INSERT INTO stock_bars (time, symbol, open, high, low, close, volume, vwap, trade_count)
+            VALUES %s
+            ON CONFLICT (time, symbol) DO NOTHING;
         """
-        Saves calculated features to the 'factor_features' table.
+        cols = ['time', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'vwap', 'trade_count']
+        if 'trade_count' not in df.columns: df['trade_count'] = 0
+            
+        data = [tuple(x) for x in df[cols].to_numpy()]
+
+        try:
+            with self.conn.cursor() as cur:
+                execute_values(cur, query, data)
+            logger.info(f"💾 Saved {len(df)} rows to DB.")
+        except Exception as e:
+            logger.error(f"❌ DB Save Error: {e}")
+            self.conn = self._connect()
+
+    def get_bars_df(self, symbols: list, limit=1000) -> pd.DataFrame:
+        if not symbols or self.conn is None: return pd.DataFrame()
+        sym_str = ",".join([f"'{s}'" for s in symbols])
+        query = f"SELECT * FROM stock_bars WHERE symbol IN ({sym_str}) ORDER BY time ASC LIMIT {limit};"
+        try:
+            return pd.read_sql(query, self.conn)
+        except Exception as e:
+            logger.error(f"❌ DB Read Error: {e}")
+            return pd.DataFrame()
+
+    # --- PORTFOLIO SNAPSHOT METHODS (NEW) ---
+    def save_portfolio_snapshot(self, equity: float, cash: float, daily_pl: float):
+        """Records the fund's NAV for the day."""
+        if self.conn is None: return
+        
+        query = """
+            INSERT INTO portfolio_metrics (time, equity, cash, daily_pl)
+            VALUES (NOW(), %s, %s, %s);
         """
         try:
-            with self.engine.begin() as conn:
-                df.to_sql('factor_features', conn, if_exists='append', index=False, method='multi', chunksize=1000)
-            print(f"✅ Saved features for {len(df)} rows.")
-        except SQLAlchemyError as e:
-            print(f"❌ Feature Save Error: {e}")
+            with self.conn.cursor() as cur:
+                cur.execute(query, (equity, cash, daily_pl))
+            logger.info(f"📸 Portfolio Snapshot Saved (Equity: ${equity:,.2f})")
+        except Exception as e:
+            logger.error(f"❌ Failed to save snapshot: {e}")
+
+    def get_portfolio_history(self, limit=30) -> pd.DataFrame:
+        """Fetches the equity curve for the dashboard."""
+        if self.conn is None: return pd.DataFrame()
+        query = f"SELECT * FROM portfolio_metrics ORDER BY time ASC LIMIT {limit};"
+        try:
+            return pd.read_sql(query, self.conn)
+        except Exception:
+            return pd.DataFrame()

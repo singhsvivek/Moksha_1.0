@@ -1,26 +1,50 @@
-version: '3.8'
 
 services:
   postgres:
     image: timescale/timescaledb:latest-pg15
     container_name: moksha_postgres
+    restart: always
     env_file: .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
-
+      
   # The Brain
+# The Brain
   moksha_bot:
     build: .
     container_name: moksha_engine
-    restart: always # Auto-restart on crash
+    restart: always
     env_file: .env
+    environment:
+      - POSTGRES_HOST=postgres 
+      - TZ=America/Chicago  # <--- ADD THIS LINE
     depends_on:
       - postgres
     volumes:
-      - ./src:/app/src # Live code updates
-      - ./moksha_nn3.pth:/app/moksha_nn3.pth # Persist the trained model
+      - ./src:/app/src
+      - ./moksha_nn3.pth:/app/moksha_nn3.pth
+      - ./logs:/app/logs   # <--- ADD THIS LINE (Shared Volume)
+
+  # The Cockpit
+  moksha_dashboard:
+    build: .
+    container_name: moksha_ui
+    # Command to launch Streamlit
+    command: poetry run streamlit run src/dashboard.py --server.port 8501 --server.address 0.0.0.0
+    restart: always
+    ports:
+      - "8501:8501"  # Maps Docker port 8501 to Laptop port 8501
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=postgres # Talk to the same DB
+      - TZ=America/Chicago  # <--- ADD THIS LINE
+    volumes:
+      - ./src:/app/src      # Live code updates
+      - ./logs:/app/logs    # Read logs from the bot
+    depends_on:
+      - postgres
 
 volumes:
   postgres_data:

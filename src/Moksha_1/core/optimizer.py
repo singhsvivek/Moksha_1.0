@@ -1,92 +1,120 @@
-# src/Moksha_1/core/optimizer.py
-import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
-from typing import Dict, List
-from Moksha_1.core.interfaces import IPortfolioOptimizer, Position, MarketRegime
+import numpy as np
+import scipy.cluster.hierarchy as sch
+from scipy.spatial.distance import squareform
+from Moksha_1.utils.logger import logger
 
-class PortfolioOptimizer(IPortfolioOptimizer):
+class PortfolioOptimizer:
     """
-    Agent 5: Optimizes weights using Mean-Variance Optimization (MVO).
-    Goal: Maximize Sharpe Ratio (Return / Risk).
+    Moksha HRP Allocator (v6.6 - Numpy Safe)
+    Fixed 'read-only' errors by forcing memory copies on diagonal extraction.
     """
-    
-    def __init__(self, risk_free_rate: float = 0.04):
-        self.rf = risk_free_rate
+    def __init__(self):
+        print("   ✅ HRP Safe-Numpy Optimizer Loaded")
+        self.conviction_multiplier = 1.0
 
-    def optimize(self, 
-                 signals: Dict[str, float], 
-                 regime: MarketRegime = None, # Not used in MVP MVO but kept for interface
-                 current_positions: List[Position] = None, 
-                 capital: float = 100000.0) -> Dict[str, float]:
-        """
-        Adapts the interface to the internal logic.
-        """
-        # This wrapper ensures we comply with the interface but delegation to the core logic below
-        pass 
-
-    def optimize_weights(self, signals: pd.DataFrame, cov_matrix: pd.DataFrame, max_weight: float = 0.20) -> pd.DataFrame:
-        """
-        Input:
-            signals: DataFrame with ['symbol', 'final_signal'] (Expected Return proxy)
-            cov_matrix: DataFrame (N x N) covariance of returns
-        Output:
-            DataFrame with optimized 'target_weight'
-        """
-        # 1. Align Data
-        valid_symbols = [s for s in signals['symbol'] if s in cov_matrix.index]
-        if not valid_symbols:
-            print("⚠️ Agent 5: No overlap between Signals and Covariance data.")
-            return signals[['symbol', 'final_signal']].rename(columns={'final_signal': 'optimized_weight'})
-
-        # Extract vectors
-        mu = signals.set_index('symbol').loc[valid_symbols]['final_signal'].values
-        sigma = cov_matrix.loc[valid_symbols, valid_symbols].values
-        n_assets = len(valid_symbols)
-
-        # 2. Define Objective: Minimize Negative Sharpe
-        def neg_sharpe(weights):
-            p_ret = np.sum(weights * mu)
-            p_vol = np.sqrt(np.dot(weights.T, np.dot(sigma, weights)))
-            if p_vol == 0: return 0
-            return -((p_ret - self.rf) / p_vol)
-
-        # 3. Constraints
-        # Bounds: -Max to +Max (Long/Short)
-        bounds = tuple((-max_weight, max_weight) for _ in range(n_assets))
+    def get_hrp_weights(self, cov_matrix):
+        # 1. ROBUST CORRELATION
+        v = np.sqrt(np.diag(cov_matrix))
+        outer_v = np.outer(v, v)
+        corr = cov_matrix / outer_v
+        corr = corr.clip(-1.0, 1.0).fillna(0)
         
-        # Gross Exposure Constraint: Sum(|weights|) <= 1.0 (No Leverage beyond 1x)
-        constraints = (
-            {'type': 'ineq', 'fun': lambda x: 1.0 - np.sum(np.abs(x))}
-        )
-
-        # 4. Optimization
-        # Initial Guess: The naive signals
-        init_guess = np.array([0.1 * np.sign(s) if s != 0 else 0.0 for s in mu])
+        # 2. DISTANCE
+        dist = np.sqrt(0.5 * (1 - corr)).fillna(0)
+        np.fill_diagonal(dist.values, 0)
+        condensed_dist = squareform(dist.values, checks=False)
+        link = sch.linkage(condensed_dist, 'single')
         
-        try:
-            result = minimize(
-                neg_sharpe, 
-                init_guess, 
-                method='SLSQP', 
-                bounds=bounds, 
-                constraints=constraints
-            )
+        # 3. SORT
+        ix = sch.leaves_list(link)
+        ordered_cov = cov_matrix.iloc[ix, ix]
+        
+        # 4. RECURSION
+        weights = pd.Series(1.0, index=ordered_cov.index)
+        
+        def recurse_bi(sub_cov):
+            if len(sub_cov) <= 1: return
             
-            if not result.success:
-                print(f"⚠️ Optimization Failed: {result.message}. Using naive weights.")
-                return self._naive_sizing(signals, max_weight)
+            split = len(sub_cov) // 2
+            c1 = sub_cov.iloc[:split, :split]
+            c2 = sub_cov.iloc[split:, split:]
+            
+            # --- CLUSTER VARIANCE (The Fix) ---
+            def get_cluster_var(c):
+                # FIX: .copy() ensures we own the memory and can write to it
+                diag = np.diag(c).copy() 
+                diag[diag == 0] = 1e-6 
+                
+                w_inv = 1 / diag
+                # Manual Dot Product to avoid dimension errors
+                # w_inv is 1D array, c is 2D matrix
+                # (w_inv * c) applies weighting to rows
+                # dot(..., w_inv) applies weighting to cols
+                
+                # Normalize weights
+                w_inv = w_inv / w_inv.sum()
+                
+                # Variance = w'Cw
+                var = np.dot(np.dot(w_inv, c), w_inv)
+                return var
 
-            return pd.DataFrame({
-                'symbol': valid_symbols,
-                'optimized_weight': result.x
-            })
+            var1 = get_cluster_var(c1)
+            var2 = get_cluster_var(c2)
+            
+            # Allocation Factor
+            if var1 == 0 and var2 == 0: alpha = 0.5
+            else: alpha = 1 - var1 / (var1 + var2)
+            
+            # Update Weights (Using index matching)
+            weights[c1.index] *= alpha
+            weights[c2.index] *= (1 - alpha)
+            
+            recurse_bi(c1)
+            recurse_bi(c2)
+
+        recurse_bi(ordered_cov)
+        return weights
+
+    def optimize_weights(self, decisions: pd.DataFrame, history_df: pd.DataFrame = None) -> pd.DataFrame:
+        if decisions.empty: return pd.DataFrame()
+        
+        # Deep Copy to prevent SettingWithCopy warnings in main loop
+        decisions = decisions.copy()
+        
+        active_buys = decisions[decisions['final_signal'] > 0]
+        if active_buys.empty: return decisions
+        
+        symbols = active_buys['symbol'].tolist()
+
+        def apply_equal_weight():
+            w = 1.0 / len(symbols)
+            # Safe assignment using loc
+            decisions.loc[decisions['final_signal'] > 0, 'final_signal'] = w * self.conviction_multiplier
+            return decisions
+
+        if history_df is None or len(symbols) < 2: return apply_equal_weight()
+
+        try:
+            # Data Prep
+            subset = history_df[symbols].replace(0, np.nan).dropna()
+            if len(subset) < 30: return apply_equal_weight()
+            
+            log_ret = np.log(subset / subset.shift(1)).dropna()
+            cov = log_ret.cov()
+            
+            # Run HRP
+            hrp_weights = self.get_hrp_weights(cov)
+            
+            # Map Results
+            weight_map = hrp_weights.to_dict()
+            decisions['hrp_weight'] = decisions['symbol'].map(weight_map).fillna(0.0)
+            
+            # Final Calculation
+            decisions['final_signal'] = decisions['hrp_weight'] * self.conviction_multiplier
+            
+            return decisions
 
         except Exception as e:
-            print(f"❌ Agent 5 Error: {e}")
-            return self._naive_sizing(signals, max_weight)
-
-    def _naive_sizing(self, signals, max_weight):
-        df = signals.copy()
-        df['optimized_weight'] = df['final_signal'].clip(-max_weight, max_weight)
-        return df[['symbol', 'optimized_weight']]
+            logger.error(f"❌ HRP Error: {e}")
+            return apply_equal_weight()
