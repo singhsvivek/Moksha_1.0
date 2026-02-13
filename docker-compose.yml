@@ -46,5 +46,37 @@ services:
     depends_on:
       - postgres
 
+  # ... existing services (postgres, moksha_bot, etc.) ...
+
+  # NEW: The Equity Algo (Kinetic Scalar)
+  equity_engine:
+    build: .
+    container_name: moksha_equity
+    command: python src/production_equity.py
+    restart: always
+    env_file: .env
+    environment:
+      - TZ=America/Chicago
+    volumes:
+      - ./src:/app/src       # Syncs code changes instantly
+      - ./logs:/app/logs     # Writes logs to your host
+    depends_on:
+      - postgres
+
+  # NEW: The Silver Algo (Intraday Structure)
+  silver_engine:
+    build: .
+    container_name: moksha_silver
+    command: python src/production_silver.py
+    restart: always
+    env_file: .env
+    environment:
+      - TZ=America/Chicago
+    volumes:
+      - ./src:/app/src
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      
 volumes:
   postgres_data:

@@ -1,0 +1,57 @@
+{
+  "performance": {
+    "capital": {
+      "starting": 25000.0,
+      "ending": 24611.275933285713,
+      "total_return": -0.015548962668571475,
+      "total_pnl": -388.7240667142869
+    },
+    "trades": {
+      "total": 1,
+      "winners": 0,
+      "losers": 1,
+      "breakeven": 0
+    },
+    "performance": {
+      "win_rate": 0.0,
+      "avg_win": 0,
+      "avg_loss": -388.72406671428604,
+      "profit_factor": 0.0,
+      "expectancy": -388.72406671428604
+    },
+    "risk": {
+      "max_drawdown": 0.015548962668571475,
+      "sharpe_ratio": 0,
+      "avg_transaction_cost": 14.168531
+    }
+  },
+  "monte_carlo": null,
+  "mae_mfe": {
+    "winners": {
+      "avg_mae": 0,
+      "avg_mfe": 0,
+      "count": 0
+    },
+    "losers": {
+      "avg_mae": 2.230000000000004,
+      "avg_mfe": 0.22999999999998977,
+      "count": 1
+    }
+  },
+  "equity_curve": [
+    25000.0,
+    24611.275933285713
+  ],
+  "total_trades": 1,
+  "neutral_days": 11,
+  "total_days": 152,
+  "config": {
+    "symbol": "AGQ",
+    "capital": 25000.0,
+    "neutral_range": "0.3-0.7",
+    "neutral_momentum": "<0.4%",
+    "range_contraction": "DISABLED",
+    "time_window": "10:00-10:30",
+    "profit_target": "1.25R"
+  }
+}
