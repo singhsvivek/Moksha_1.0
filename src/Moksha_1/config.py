@@ -14,6 +14,7 @@ class Settings:
     ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
     ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
     ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex")
+    ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL")
 
     # --- 2. TRADING UNIVERSE ---
     # Parses "AAPL,MSFT,SPY" string into a Python List

@@ -52,14 +52,23 @@ def get_pid_status(key):
 
 def toggle_bot(key, action):
     cfg = STRATEGIES[key]
+    pid_file = cfg['pid']
+    
     if action == "START":
         os.system("mkdir -p /app/logs")
         
-        # --- THE FIX: DIRECT INJECTION ---
-        # We use 'env' to set PYTHONPATH inline. No script file needed.
-        # This forces the python process to look in /app/libs
-        cmd = f"nohup env PYTHONPATH=/app/libs python -u {cfg['file']} >> /app/logs/moksha.log 2>&1 & echo $! > {cfg['pid']}"
+        # --- THE FIX ---
+        # 1. Use sys.executable to use the EXACT python environment that has libraries installed
+        # 2. Use absolute path for the script
+        # 3. Do NOT overwrite PYTHONPATH manually; let Docker handle it
+        python_exec = sys.executable
+        script_path = os.path.abspath(cfg['file'])
+        log_file = "/app/logs/moksha.log"
         
+        # Construct command: python /app/src/script.py
+        cmd = f"nohup {python_exec} -u {script_path} >> {log_file} 2>&1 & echo $! > {pid_file}"
+        
+        # Run
         os.system(cmd)
         
     elif action == "STOP":
@@ -67,8 +76,10 @@ def toggle_bot(key, action):
         if run and pid: 
             try: os.kill(pid, signal.SIGKILL)
             except: pass
-        if os.path.exists(cfg['pid']): os.remove(cfg['pid'])
+        if os.path.exists(pid_file): os.remove(pid_file)
+    
     time.sleep(1)
+
 
 def parse_logs():
     lines = []

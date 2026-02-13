@@ -5,6 +5,12 @@ from pathlib import Path
 from datetime import datetime
 import pytz
 
+# --- IMPORT MESSENGER ---
+try:
+    from Moksha_1.utils.messenger import messenger
+except ImportError:
+    messenger = None
+
 # --- CUSTOM HANDLERS ---
 
 class CentralTimeFormatter(logging.Formatter):
@@ -30,7 +36,30 @@ class UnbufferedRotatingFileHandler(RotatingFileHandler):
     """
     def emit(self, record):
         super().emit(record)
-        self.flush() # <--- THE FIX: Force write to disk
+        self.flush() 
+
+# --- NEW: DISCORD HANDLER ---
+class DiscordLoggingHandler(logging.Handler):
+    """
+    Automatically sends ERROR and CRITICAL logs to Discord.
+    """
+    def emit(self, record):
+        # Only proceed if messenger exists and level is high enough
+        if record.levelno >= logging.ERROR and messenger:
+            try:
+                # Format the log message
+                log_entry = self.format(record)
+                
+                # Send to the 'error' channel defined in messenger.py
+                # Wrap in code block ``` for readability in Discord
+                messenger.send_message(
+                    message=f"```\n{log_entry}\n```", 
+                    title=f"🚨 LOG: {record.levelname}", 
+                    channel="error"
+                )
+            except Exception:
+                # Never crash the app if Discord fails
+                pass
 
 class MokshaLogger:
     _instance = None
@@ -62,7 +91,6 @@ class MokshaLogger:
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
         
-        # Use our new Unbuffered Handler
         file_handler = UnbufferedRotatingFileHandler(
             filename=log_dir / "moksha.log",
             maxBytes=10*1024*1024,
@@ -70,6 +98,12 @@ class MokshaLogger:
         )
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
+
+        # 3. Discord Error Bridge (THE FIX)
+        discord_handler = DiscordLoggingHandler()
+        discord_handler.setFormatter(formatter)
+        discord_handler.setLevel(logging.ERROR) # Only send ERROR and CRITICAL
+        self.logger.addHandler(discord_handler)
 
     def get_logger(self):
         return self.logger

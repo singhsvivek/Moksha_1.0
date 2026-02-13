@@ -1,0 +1,74 @@
+{
+  "performance": {
+    "capital": {
+      "starting": 25000.0,
+      "ending": 22680.939603428564,
+      "total_return": -0.09276241586285745,
+      "total_pnl": -2319.0603965714363
+    },
+    "trades": {
+      "total": 2,
+      "winners": 0,
+      "losers": 2,
+      "breakeven": 0
+    },
+    "performance": {
+      "win_rate": 0.0,
+      "avg_win": 0,
+      "avg_loss": -1159.5301982857177,
+      "profit_factor": 0.0,
+      "expectancy": -1159.5301982857177
+    },
+    "risk": {
+      "max_drawdown": 0.09276241586285745,
+      "sharpe_ratio": -2460.1124996115577,
+      "avg_transaction_cost": 87.539484
+    },
+    "strategy_breakdown": {
+      "Wick Sweep Long": {
+        "count": 2,
+        "win_rate": 0.0,
+        "total_pnl": -2319.0603965714354,
+        "avg_pnl": -1159.5301982857177
+      }
+    },
+    "trend_breakdown": {
+      "uptrend": {
+        "count": 2,
+        "win_rate": 0.0,
+        "total_pnl": -2319.0603965714354
+      }
+    }
+  },
+  "monte_carlo": null,
+  "mae_mfe": {
+    "winners": {
+      "avg_mae": 0,
+      "avg_mfe": 0,
+      "count": 0
+    },
+    "losers": {
+      "avg_mae": 1.4550000000000018,
+      "avg_mfe": 0.14499999999999602,
+      "count": 2
+    }
+  },
+  "equity_curve": [
+    25000.0,
+    23764.441979428564,
+    22680.939603428564
+  ],
+  "total_trades": 2,
+  "total_filtered": 94,
+  "config": {
+    "symbol": "AGQ",
+    "capital": 25000.0,
+    "trend_filter": true,
+    "pattern_filter": [
+      "Wick Sweep Long"
+    ],
+    "profit_target": "1.5R",
+    "volume_filter": "1.5x",
+    "time_window": "10:00-11:00"
+  }
+}
