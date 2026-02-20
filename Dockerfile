@@ -1,30 +1,30 @@
-FROM python:3.10-slim
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Poetry
-ENV POETRY_VERSION=1.7.1
-RUN curl -sSL https://install.python-poetry.org | python3 -
-ENV PATH="/root/.local/bin:$PATH"
+# Use python 3.9 slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
-# Copy dependency definition
-COPY pyproject.toml poetry.lock ./
+# Install system basics
+RUN apt-get update && apt-get install -y \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
-RUN poetry config virtualenvs.create false \
-    && poetry install --no-root --only main
+# 1. Force-Install Critical Libraries Globally (Bypassing Poetry for stability)
+# UPDATED: Streamlit 1.32.0 supports st.rerun() and new layout options
+RUN pip install --no-cache-dir \
+    pandas==2.0.3 \
+    numpy==1.24.3 \
+    alpaca-trade-api==3.0.2 \
+    streamlit==1.32.0 \
+    python-dotenv==1.0.0 \
+    watchdog==3.0.0 \
+    pytz
 
-# Copy application code
+# 2. Copy the project code
 COPY . .
 
-# --- THE FIX IS HERE ---
-# Add 'src' to the Python Path so imports like 'from Moksha_1...' work
-ENV PYTHONPATH="${PYTHONPATH}:/app/src"
+# 3. Set Python Path so 'import Moksha_1' works everywhere
+ENV PYTHONPATH="${PYTHONPATH}:/app"
 
-# Run the scheduler
-CMD ["python", "src/Moksha_1/main_loop.py"]
+# Default command
+CMD ["python", "src/production_equity.py"]

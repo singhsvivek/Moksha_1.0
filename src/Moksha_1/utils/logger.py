@@ -1,5 +1,6 @@
 import logging
 import sys
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -38,7 +39,7 @@ class UnbufferedRotatingFileHandler(RotatingFileHandler):
         super().emit(record)
         self.flush() 
 
-# --- NEW: DISCORD HANDLER ---
+# --- DISCORD HANDLER ---
 class DiscordLoggingHandler(logging.Handler):
     """
     Automatically sends ERROR and CRITICAL logs to Discord.
@@ -51,14 +52,12 @@ class DiscordLoggingHandler(logging.Handler):
                 log_entry = self.format(record)
                 
                 # Send to the 'error' channel defined in messenger.py
-                # Wrap in code block ``` for readability in Discord
                 messenger.send_message(
                     message=f"```\n{log_entry}\n```", 
                     title=f"🚨 LOG: {record.levelname}", 
                     channel="error"
                 )
             except Exception:
-                # Never crash the app if Discord fails
                 pass
 
 class MokshaLogger:
@@ -74,6 +73,9 @@ class MokshaLogger:
         self.logger = logging.getLogger("MokshaBot")
         self.logger.setLevel(logging.INFO)
         
+        # PREVENT DUPLICATES
+        self.logger.propagate = False
+        
         if self.logger.hasHandlers():
             return
 
@@ -87,22 +89,37 @@ class MokshaLogger:
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 
-        # 2. File (Unbuffered)
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        
+        # 2. File (Smart Path Selection)
+        # Check if we are in Docker (usually has /app) OR local
+        # If /app exists and is writable, use it. Otherwise use local ./logs
+        if os.path.exists("/app") and os.access("/app", os.W_OK):
+            log_dir = Path("/app/logs")
+        else:
+            # Local development fallback
+            log_dir = Path.cwd() / "logs"
+            
+        try:
+            log_dir.mkdir(exist_ok=True, parents=True)
+            file_path = log_dir / "moksha.log"
+        except Exception as e:
+            # Fallback to temp dir if permissions fail completely
+            import tempfile
+            log_dir = Path(tempfile.gettempdir())
+            file_path = log_dir / "moksha.log"
+            print(f"⚠️ Warning: Could not create log dir. Falling back to {file_path}")
+
         file_handler = UnbufferedRotatingFileHandler(
-            filename=log_dir / "moksha.log",
+            filename=file_path,
             maxBytes=10*1024*1024,
             backupCount=5
         )
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
 
-        # 3. Discord Error Bridge (THE FIX)
+        # 3. Discord Error Bridge
         discord_handler = DiscordLoggingHandler()
         discord_handler.setFormatter(formatter)
-        discord_handler.setLevel(logging.ERROR) # Only send ERROR and CRITICAL
+        discord_handler.setLevel(logging.ERROR) 
         self.logger.addHandler(discord_handler)
 
     def get_logger(self):
